@@ -1,4 +1,4 @@
-// ShiftSwitch — tap Shift once to retype the last word in the other keyboard layout.
+// ShiftSwitch — tap the right Option key once to retype the last word in the other keyboard layout.
 // Single-file AppKit menu bar app. No auto-switching, no network, no dictionaries.
 
 import AppKit
@@ -9,7 +9,7 @@ import ServiceManagement
 
 private let kMarker: Int64 = 0x5348_4657          // tags our own synthetic events ("SHFW")
 private let kReplay: Int64 = 0x5348_5250          // tags user keys held back during a conversion and replayed
-private let kShiftL = CGKeyCode(kVK_Shift), kShiftR = CGKeyCode(kVK_RightShift)
+private let kOptionR = CGKeyCode(kVK_RightOption)
 private let kBackspace = CGKeyCode(kVK_Delete), kSpace = CGKeyCode(kVK_Space)
 private let kMaxWord = 128
 
@@ -240,10 +240,11 @@ private final class Engine {
     // The last word (since whitespace) plus any whitespace typed after it.
     private var buf: [Stroke] = []
 
-    // Shift-tap detection
-    private var shiftDown = false
-    private var shiftCandidate = false
-    private var shiftDownAt: TimeInterval = 0
+    // Right-Option tap detection. Left Option shares .maskAlternate, so it is not a trigger.
+    private var triggerDown = false
+    private var triggerCandidate = false
+    private var triggerDownAt: TimeInterval = 0
+    private var alternateDown = false       // .maskAlternate on the previous flags event
 
     private var deadState: UInt32 = 0
 
@@ -305,7 +306,7 @@ private final class Engine {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }   // macOS disables slow taps; turn it back on
             log("tap re-enabled after \(type == .tapDisabledByTimeout ? "timeout" : "user input")")
-            shiftCandidate = false
+            triggerCandidate = false
             reset()
             return true
         }
@@ -318,7 +319,7 @@ private final class Engine {
             held.append((CGKeyCode(e.getIntegerValueField(.keyboardEventKeycode)), e.flags))
             return false
         }
-        shiftCandidate = false              // Shift+letter = capital, Shift+click = selection: not a tap
+        triggerCandidate = false              // ⌥+letter, any other key, or a click: not a tap
         if type == .keyDown { onKey(e) } else { reset() }   // mouse click moved the caret
         return true
     }
@@ -326,24 +327,29 @@ private final class Engine {
     private func onFlags(_ e: CGEvent) {
         let key = CGKeyCode(e.getIntegerValueField(.keyboardEventKeycode))
         let f = e.flags
-        let others: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskSecondaryFn]
-        guard key == kShiftL || key == kShiftR else {
-            shiftCandidate = false          // any other modifier touched during the press cancels it
+        // Right Option sets .maskAlternate itself. Shift, ⌘, ⌃ and Fn are the other modifiers that cancel.
+        let others: CGEventFlags = [.maskShift, .maskCommand, .maskControl, .maskSecondaryFn]
+        let altNow = f.contains(.maskAlternate)
+        defer { alternateDown = altNow }    // so the next right-Option edge can see a held left Option
+        guard key == kOptionR else {
+            triggerCandidate = false          // left Option, Shift, ⌘, ⌃, Fn… during the press cancel it
             return
         }
         let now = ProcessInfo.processInfo.systemUptime
-        if f.contains(.maskShift) && !shiftDown {
-            shiftDown = true
-            shiftDownAt = now
-            shiftCandidate = f.intersection(others).isEmpty
-        } else if !f.contains(.maskShift) && shiftDown {
-            shiftDown = false
-            if shiftCandidate && enabled && now - shiftDownAt < tapThreshold {
-                convert()                   // synchronously: from here on, typed keys are held back
+        if altNow && !alternateDown {
+            triggerDown = true                // Alternate just turned on, and this event is the right key
+            triggerDownAt = now
+            triggerCandidate = f.intersection(others).isEmpty
+        } else if !altNow && triggerDown {
+            triggerDown = false
+            if triggerCandidate && enabled && now - triggerDownAt < tapThreshold {
+                convert()                     // synchronously: from here on, typed keys are held back
             }
-            shiftCandidate = false
+            triggerCandidate = false
         } else {
-            shiftCandidate = false          // second Shift pressed while first held
+            // Left Option is held: both keys set .maskAlternate, so this right-key edge doesn't change it.
+            triggerCandidate = false
+            triggerDown = false
         }
     }
 
@@ -511,7 +517,7 @@ private final class Engine {
     }
 
     /// "ShiftSwitch: Convert Layout" service: the app gave us its selection; return it converted — the app
-    /// replaces the selection itself. Works from the Services menu too, not only via our Shift fallback.
+    /// replaces the selection itself. Works from the Services menu too, not only via our right-Option fallback.
     func serviceConvert(_ text: String) -> String? {
         let fromTap = servicePending
         servicePending = false
@@ -541,7 +547,7 @@ private final class Engine {
     private static func post(_ src: CGEventSource?, _ key: CGKeyCode, _ flags: CGEventFlags, _ str: String?) {
         for down in [true, false] {
             guard let ev = CGEvent(keyboardEventSource: src, virtualKey: key, keyDown: down) else { continue }
-            ev.flags = flags
+            ev.flags = flags                    // not inherited: the Option tap has already been released
             if let str {
                 var u = Array(str.utf16)
                 ev.keyboardSetUnicodeString(stringLength: u.count, unicodeString: &u)
@@ -675,7 +681,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         case .secureInput: L("Secure Input: \(SecureInput.owner() ?? "?") блокирует ввод",
                              "Secure Input: \(SecureInput.owner() ?? "?") blocks typing")
         case .disabled: L("Выключено", "Disabled")
-        case .active: L("Активно — короткий Shift", "Active — tap Shift")
+        case .active: L("Активно — короткий правый Option", "Active — tap right Option")
         }
         enabledItem.state = engine.enabled ? .on : .off
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off

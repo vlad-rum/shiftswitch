@@ -5,7 +5,7 @@
 <h1 align="center">ShiftSwitch</h1>
 
 <p align="center">
-  <b>Typed in the wrong layout? Tap Shift.</b><br>
+  <b>Typed in the wrong layout? Tap the right Option key.</b><br>
   <code>ghbdtn</code> → <code>привет</code> — the last word is retyped in the other keyboard layout.<br>
   Tiny native macOS menu bar app. Works in Terminal and iTerm2.
 </p>
@@ -37,27 +37,27 @@ Requires macOS 13 Ventura or later, Apple Silicon or Intel.
 
 ## How it works
 
-Type a word, realise it came out in the wrong layout, **tap Shift** (press and release, nothing else) — the word is
+Type a word, realise it came out in the wrong layout, **tap the right Option key** (⌥ — press and release, nothing else) — the word is
 erased, retyped in the other layout, and the system layout is switched so you keep typing correctly.
-Tap Shift again to undo.
+Tap right Option again to undo.
 
 | You do | ShiftSwitch does |
 |---|---|
-| Short Shift tap after a word | retypes the last word (everything since the last space) in the other layout |
+| Short right-Option tap after a word | retypes the last word (everything since the last space) in the other layout |
 | …with spaces after the word | converts the word, keeps the spaces |
-| Select text in an editor or browser field, tap Shift | the whole selection is retyped in the other layout, caret at its end |
-| Tap Shift again | converts back |
-| Tap Shift with nothing typed | just switches the layout |
-| Shift+letter, long Shift hold, Shift+⌘/⌃/⌥, Shift+click | nothing — these are normal Shift uses |
+| Select text in an editor or browser field, tap right Option | the whole selection is retyped in the other layout, caret at its end |
+| Tap right Option again | converts back |
+| Tap right Option with nothing typed | just switches the layout |
+| Left Option, Shift, ⌥+letter, long hold, right Option+⇧/⌘/⌃/Fn, click | nothing — these stay normal keys |
 
 The word buffer is reset by a mouse click, arrows, Home/End/PgUp/PgDn, Return, Tab, Esc, any ⌘/⌃/⌥ shortcut,
 switching apps, or switching the layout manually. Backspace edits the buffer.
 
 ### Selected text
 
-Select any text in a text field (TextEdit, Notes, Mail, Safari, Chrome, Slack, VS Code…) and tap Shift — the
+Select any text in a text field (TextEdit, Notes, Mail, Safari, Chrome, Slack, VS Code…) and tap right Option — the
 selection is converted as a whole (`Ghbdtn, vbh!` → `Привет, мир!`), the caret lands at its end so you can keep
-typing, and the layout switches. Tap Shift again right away to undo.
+typing, and the layout switches. Tap right Option again right away to undo.
 The direction is picked from the letters (Latin → other layout, Cyrillic → other layout); digits, emoji and line
 breaks are kept.
 
@@ -91,7 +91,7 @@ failure modes collected from their changelogs, support forums and the issue trac
 | Replacement via *select → ⌘C → ⌘V* breaks in terminals (⌘C is SIGINT there) and clobbers the clipboard | erases with Backspace and retypes; clipboard is never touched |
 | Letters that live on punctuation keys (`[ ] ; ' , . \``→ х ъ ж э б ю ё) are cut off as punctuation, so words like «их», «всё», «ещё» don't convert | a word is everything since the last whitespace |
 | Hard-coded character tables are wrong for *Russian – PC*, ISO keyboards, US-International dead keys | characters come from your installed layouts via `UCKeyTranslate`; dead keys (`'` `` ` `` `"` `~` `^`) handled |
-| Double-Shift false triggers (Shift+Q, space, Shift+W) | a single tap; any key, click or modifier during the press cancels it |
+| Double-Shift false triggers (Shift+Q, space, Shift+W) | a single right-Option tap; any key, click or other modifier during the press cancels it |
 | First letters come out in the old layout / swapped letters after switching | waits for the layout switch to take effect; every synthetic key event also carries its Unicode string |
 | Electron apps (Slack, VS Code, Telegram Desktop) drop fast synthetic keystrokes | events are spaced by 1.5 ms |
 | With 3+ layouts the "next" layout is the wrong one | toggles to the previously used layout |
@@ -110,7 +110,7 @@ app's menu (Terminal → Secure Keyboard Entry / iTerm2 → Secure Keyboard Entr
 ## Settings
 
 ```bash
-# Maximum Shift press duration that counts as a tap (default 300 ms)
+# Maximum right-Option press duration that counts as a tap (default 300 ms)
 defaults write us.imakarov.shiftswitch tapThresholdMs -int 250
 
 # Diagnostics log → ~/Library/Logs/ShiftSwitch.log (timings and counts only, never typed text)
@@ -132,7 +132,7 @@ command line tools. `scripts/release.sh` builds a signed, notarized DMG.
 
 ## По-русски
 
-**ShiftSwitch** — исправляет слово, набранное не в той раскладке: короткое нажатие Shift, и `ghbdtn` превращается
+**ShiftSwitch** — исправляет слово, набранное не в той раскладке: короткое нажатие правого Option (⌥), и `ghbdtn` превращается
 в `привет`, а раскладка переключается. Повторное нажатие — отмена. Без автопереключения, без словарей, без сети.
 Работает в Terminal и iTerm2 (если там выключен Secure Keyboard Entry). Установка: `brew install --cask
 imakarov/tap/shiftswitch` или DMG из [Releases](https://github.com/imakarov/shiftswitch/releases/latest).
