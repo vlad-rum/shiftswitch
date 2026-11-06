@@ -233,6 +233,13 @@ private final class Engine {
         get { UserDefaults.standard.bool(forKey: "enabled") }
         set { UserDefaults.standard.set(newValue, forKey: "enabled") }
     }
+    /// Opt-in: a lone ⌘Space keyDown switches the layout through TIS directly (off by default). Works around a
+    /// macOS bug where the system "Select the previous input source" hotkey sometimes flips the layout and then
+    /// reverts it ~100–500 ms later. Requires the system ⌘Space shortcut to be turned off so both don't fire.
+    var cmdSpace: Bool {
+        get { UserDefaults.standard.bool(forKey: "cmdSpaceSwitch") }
+        set { UserDefaults.standard.set(newValue, forKey: "cmdSpaceSwitch") }
+    }
     var tapActive: Bool { tap != nil }
     private var tap: CFMachPort?
     private var tapThreshold: TimeInterval = 0.3
@@ -253,6 +260,7 @@ private final class Engine {
     private var currentLayout = Layouts.data(Layouts.current())   // cached: onKey runs on every keystroke
     private var previousID: String?
     private var expectedID: String?
+    private var switchGeneration = 0        // cancels a pending ⌘Space verify when a newer ⌘Space switch starts
 
     private var busy = false
     private var held: [(CGKeyCode, CGEventFlags)] = []   // real keys typed during a conversion, replayed after it
@@ -317,6 +325,16 @@ private final class Engine {
         // Keys typed while we erase and retype would land in the middle of the word: hold them, replay after.
         if type == .keyDown && busy && tag != kReplay {
             held.append((CGKeyCode(e.getIntegerValueField(.keyboardEventKeycode)), e.flags))
+            return false
+        }
+        // Optional ⌘Space layout switch: a lone ⌘ held with Space, no other modifier. Swallow it (so the system
+        // hotkey, if still on, can't also fire and revert us) and switch directly. Autorepeats while the keys stay
+        // down are swallowed too, but switch only once.
+        if cmdSpace && enabled && type == .keyDown
+            && CGKeyCode(e.getIntegerValueField(.keyboardEventKeycode)) == kSpace
+            && e.flags.contains(.maskCommand)
+            && e.flags.intersection([.maskShift, .maskControl, .maskAlternate, .maskSecondaryFn]).isEmpty {
+            if e.getIntegerValueField(.keyboardEventAutorepeat) == 0 { switchLayout() }
             return false
         }
         triggerCandidate = false              // ⌥+letter, any other key, or a click: not a tap
@@ -535,6 +553,34 @@ private final class Engine {
         return r.text
     }
 
+    /// ⌘Space: switch to the other layout directly through TIS, then make sure it sticks. We don't set
+    /// `expectedID`, so `layoutChanged()` treats it as a manual switch and drops the stale word buffer.
+    private func switchLayout() {
+        guard let target = Layouts.other(previous: previousID) else { return }
+        let targetID = Layouts.id(target)
+        reset()
+        switchGeneration += 1
+        let gen = switchGeneration
+        TISSelectInputSource(target)
+        log("cmd-space: switch -> \(targetID)")
+        verifyLayout(target, id: targetID, gen: gen, tries: 3)
+    }
+
+    /// The macOS bug flips the layout and then reverts it ~100–500 ms later. Re-check after 150 ms and, if it
+    /// didn't stick, select again (up to `tries` times). A newer ⌘Space switch bumps `switchGeneration` and
+    /// cancels this chain, so a quick double tap isn't fought back to the first layout.
+    private func verifyLayout(_ target: TISInputSource, id: String, gen: Int, tries: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            guard gen == self.switchGeneration else { log("cmd-space: verify cancelled (newer switch)"); return }
+            let cur = Layouts.id(Layouts.current())
+            if cur == id { log("cmd-space: layout confirmed"); return }
+            guard tries > 0 else { log("cmd-space: gave up, still \(cur)"); return }
+            log("cmd-space: reverted to \(cur), reselecting (\(tries) left)")
+            TISSelectInputSource(target)
+            self.verifyLayout(target, id: id, gen: gen, tries: tries - 1)
+        }
+    }
+
     /// Layout switching is asynchronous: poll (on main, as TIS requires) until it has taken effect, max ~200 ms.
     private func waitForLayout(_ id: String, tries: Int, then work: @escaping () -> Void) {
         if tries == 0 || Layouts.id(Layouts.current()) == id {
@@ -582,6 +628,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
     private let enabledItem = NSMenuItem(title: L("Включено", "Enabled"), action: #selector(toggleEnabled), keyEquivalent: "")
     private let loginItem = NSMenuItem(title: L("Запускать при входе", "Launch at Login"), action: #selector(toggleLogin),
                                        keyEquivalent: "")
+    private let cmdSpaceItem = NSMenuItem(title: L("Переключать раскладку по ⌘Space", "Switch layout with ⌘Space"),
+                                          action: #selector(toggleCmdSpace), keyEquivalent: "")
 
     private lazy var services = ServiceProvider(engine)
 
@@ -594,9 +642,11 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         status.isEnabled = false
         enabledItem.target = self
         loginItem.target = self
+        cmdSpaceItem.target = self
         menu.addItem(status)
         menu.addItem(.separator())
         menu.addItem(enabledItem)
+        menu.addItem(cmdSpaceItem)
         menu.addItem(loginItem)
         menu.addItem(.separator())
         menu.addItem(withTitle: L("Разрешения…", "Permissions…"), action: #selector(openAX),
@@ -684,12 +734,52 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         case .active: L("Активно — короткий правый Option", "Active — tap right Option")
         }
         enabledItem.state = engine.enabled ? .on : .off
+        cmdSpaceItem.state = engine.cmdSpace ? .on : .off
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
     @objc private func toggleEnabled() {
         engine.enabled.toggle()
         tick()
+    }
+
+    @objc private func toggleCmdSpace() {
+        // Turning it on while the system still owns ⌘Space: warn, because both would fire and cancel out.
+        if !engine.cmdSpace && systemUsesCmdSpace() {
+            let alert = NSAlert()
+            alert.messageText = L("Системное сочетание ⌘Space всё ещё включено",
+                                  "The system ⌘Space shortcut is still on")
+            alert.informativeText = L(
+                "Отключите «Выбрать предыдущий источник ввода» в «Клавиатура → Сочетания клавиш → Источники ввода», "
+                + "иначе система и ShiftSwitch будут переключать раскладку одновременно и отменять друг друга.",
+                "Turn off \"Select the previous input source\" in Keyboard → Keyboard Shortcuts → Input Sources, "
+                + "otherwise the system and ShiftSwitch both switch the layout and cancel each other out.")
+            alert.addButton(withTitle: L("Открыть настройки", "Open Settings"))
+            alert.addButton(withTitle: L("Всё равно включить", "Enable anyway"))
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!)
+            }
+        }
+        engine.cmdSpace.toggle()
+        tick()
+    }
+
+    /// True when the system "Select the previous/next input source" shortcut (symbolic hotkeys 60/61) is enabled
+    /// and bound to ⌘Space (keycode 49, modifier 0x100000). Reads another app's domain via CFPreferences.
+    private func systemUsesCmdSpace() -> Bool {
+        guard let hk = CFPreferencesCopyAppValue("AppleSymbolicHotKeys" as CFString,
+                                                 "com.apple.symbolichotkeys" as CFString) as? [String: Any] else {
+            return false
+        }
+        func boundToCmdSpace(_ key: String) -> Bool {
+            guard let entry = hk[key] as? [String: Any],
+                  (entry["enabled"] as? NSNumber)?.boolValue == true,
+                  let value = entry["value"] as? [String: Any],
+                  let params = (value["parameters"] as? [NSNumber])?.map(\.intValue), params.count >= 3
+            else { return false }
+            return params[1] == 49 && params[2] == 0x100000      // Space, ⌘
+        }
+        return boundToCmdSpace("60") || boundToCmdSpace("61")
     }
 
     @objc private func toggleLogin() {

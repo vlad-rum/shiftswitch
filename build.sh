@@ -16,6 +16,7 @@ cp Resources/AppIcon.icns "$APP/Contents/Resources/"
 find_id() { security find-identity -v -p codesigning | awk -F'"' -v p="$1" '$2 ~ p {print $2; exit}'; }
 IDENTITY="${SIGN_IDENTITY:-$(find_id "Developer ID Application")}"
 IDENTITY="${IDENTITY:-$(find_id "Apple Development")}"
+xattr -cr "$APP"   # drop Finder/sync xattrs (e.g. iCloud) that codesign refuses
 codesign --force --options runtime --timestamp --sign "${IDENTITY:--}" "$APP"
 echo "Signed with: ${IDENTITY:-ad-hoc}"
 if [[ "${1:-}" == "install" ]]; then

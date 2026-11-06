@@ -107,6 +107,20 @@ prompts), macOS hides every keystroke from all apps like this one — no layout 
 shows a 🔒 icon in the menu bar and the menu names the app that holds Secure Input. Turn the option off in that
 app's menu (Terminal → Secure Keyboard Entry / iTerm2 → Secure Keyboard Entry).
 
+## ⌘Space layout switching (optional)
+
+Some people switch layouts with the system **⌘Space** ("Select the previous input source") rather than the menu
+bar — and hit a macOS bug where the shortcut flips the layout and then reverts it ~100–500 ms later, so the first
+press looks ignored ([Apple Developer Forums](https://developer.apple.com/forums/thread/841799)). A direct
+`TISSelectInputSource` call doesn't have that problem.
+
+Enable **Switch layout with ⌘Space** in the menu and ShiftSwitch will intercept a lone ⌘Space, switch the layout
+itself, and re-assert the switch if the system tries to revert it. Because it has to be the only thing handling
+⌘Space, **turn off the system shortcut first** in *System Settings → Keyboard → Keyboard Shortcuts → Input
+Sources → Select the previous input source*; ShiftSwitch warns you if it's still on. A second ⌘Space switches back,
+and holding the keys down doesn't switch repeatedly. This only switches the layout — it never retypes text; that is
+still the right-Option tap.
+
 ## Settings
 
 ```bash
@@ -136,6 +150,11 @@ command line tools. `scripts/release.sh` builds a signed, notarized DMG.
 в `привет`, а раскладка переключается. Повторное нажатие — отмена. Без автопереключения, без словарей, без сети.
 Работает в Terminal и iTerm2 (если там выключен Secure Keyboard Entry). Установка: `brew install --cask
 imakarov/tap/shiftswitch` или DMG из [Releases](https://github.com/imakarov/shiftswitch/releases/latest).
+
+Необязательный пункт меню **«Переключать раскладку по ⌘Space»** переключает раскладку напрямую через
+`TISSelectInputSource` в обход бага macOS, когда системное сочетание меняет раскладку и через 100–500 мс
+откатывает её обратно. Сначала отключите системное «Выбрать предыдущий источник ввода» в «Клавиатура →
+Сочетания клавиш → Источники ввода» — ShiftSwitch предупредит, если оно ещё включено.
 
 ## License
 
