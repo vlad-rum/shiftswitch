@@ -272,7 +272,7 @@ private final class Engine {
     private let selectionQueue = DispatchQueue(label: "shiftswitch.ax", qos: .userInteractive)
 
     init() {
-        UserDefaults.standard.register(defaults: ["enabled": true, "tapThresholdMs": 300])
+        UserDefaults.standard.register(defaults: ["enabled": true, "tapThresholdMs": 300, "showIndicator": true])
         tapThreshold = TimeInterval(UserDefaults.standard.integer(forKey: "tapThresholdMs")) / 1000
         buf.reserveCapacity(kMaxWord + 1)
         DistributedNotificationCenter.default().addObserver(
@@ -605,6 +605,159 @@ private final class Engine {
     }
 }
 
+// MARK: - Layout indicator (our own "RU/EN" badge near the caret)
+
+/// A small floating badge shown on every input-source change, like the system Sonoma indicator but always on.
+/// It anchors to the text caret via Accessibility; where that isn't exposed (terminals, some Electron apps, no
+/// focused text) it falls back to the centre of the screen under the mouse.
+private final class LayoutHUD {
+    private var panel: NSPanel?
+    private var label: NSTextField?
+    private var effect: NSVisualEffectView?
+    private var hideItem: DispatchWorkItem?
+    private let axQueue = DispatchQueue(label: "shiftswitch.hud", qos: .userInteractive)
+
+    func show() {
+        let text = Self.badge()                 // TIS: read the new source name on the main thread
+        axQueue.async {                          // AX can block: find the caret off the main thread
+            let caret = Self.caretAnchor()
+            DispatchQueue.main.async { self.present(text, caret: caret) }
+        }
+    }
+
+    private func present(_ text: String, caret: NSRect?) {
+        let panel = ensurePanel()
+        guard let label, let effect else { return }
+        label.stringValue = text
+        label.sizeToFit()
+        let lw = label.frame.width, lh = label.frame.height
+        let w = max(40, lw + 22), h = lh + 12
+        panel.setContentSize(NSSize(width: w, height: h))
+        effect.frame = NSRect(x: 0, y: 0, width: w, height: h)
+        label.frame = NSRect(x: (w - lw) / 2, y: (h - lh) / 2, width: lw, height: lh)
+        let origin: NSPoint
+        if let c = caret {
+            origin = NSPoint(x: c.minX, y: c.minY - h - 4)          // just below the caret
+        } else {
+            let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }
+                ?? NSScreen.main ?? NSScreen.screens.first!
+            origin = NSPoint(x: screen.frame.midX - w / 2, y: screen.frame.midY - h / 2)
+        }
+        panel.setFrameOrigin(origin)
+        panel.alphaValue = 1
+        panel.orderFrontRegardless()
+        hideItem?.cancel()
+        let item = DispatchWorkItem { [weak panel] in
+            guard let panel else { return }
+            NSAnimationContext.runAnimationGroup({ $0.duration = 0.3; panel.animator().alphaValue = 0 },
+                                                 completionHandler: { panel.orderOut(nil) })
+        }
+        hideItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7, execute: item)
+    }
+
+    private func ensurePanel() -> NSPanel {
+        if let panel { return panel }
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 40, height: 30),
+                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        p.isFloatingPanel = true
+        p.level = .statusBar
+        p.backgroundColor = .clear
+        p.isOpaque = false
+        p.hasShadow = true
+        p.ignoresMouseEvents = true
+        p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
+        let fx = NSVisualEffectView(frame: p.contentRect(forFrameRect: p.frame))
+        fx.material = .hudWindow
+        fx.state = .active
+        fx.blendingMode = .behindWindow
+        fx.wantsLayer = true
+        fx.layer?.cornerRadius = 7
+        fx.layer?.masksToBounds = true
+        let lbl = NSTextField(labelWithString: "")
+        lbl.font = .systemFont(ofSize: 15, weight: .semibold)
+        lbl.alignment = .center
+        lbl.textColor = .labelColor
+        lbl.backgroundColor = .clear
+        lbl.drawsBackground = false
+        fx.addSubview(lbl)
+        p.contentView = fx
+        panel = p; effect = fx; label = lbl
+        return p
+    }
+
+    /// A short badge for the current input source: its first language code upper-cased ("RU", "EN"), else the
+    /// first two letters of its localized name.
+    private static func badge() -> String {
+        let src = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
+        if let p = TISGetInputSourceProperty(src, kTISPropertyInputSourceLanguages),
+           let langs = Unmanaged<CFArray>.fromOpaque(p).takeUnretainedValue() as? [String],
+           let code = langs.first, !code.isEmpty {
+            return String(code.prefix(2)).uppercased()
+        }
+        if let p = TISGetInputSourceProperty(src, kTISPropertyLocalizedName) {
+            let name = Unmanaged<CFString>.fromOpaque(p).takeUnretainedValue() as String
+            return String(name.prefix(2)).uppercased()
+        }
+        return "?"
+    }
+
+    /// The caret rectangle of the focused text element in AppKit screen coordinates, or nil if the app doesn't
+    /// expose it. Blocks on AX: call off the main thread.
+    private static func caretAnchor() -> NSRect? {
+        guard let front = NSWorkspace.shared.frontmostApplication else { return nil }
+        let app = AXUIElementCreateApplication(front.processIdentifier)
+        AXUIElementSetMessagingTimeout(app, 0.2)
+        var focused: CFTypeRef?
+        let fe = AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focused)
+        guard fe == .success, let f = focused, CFGetTypeID(f) == AXUIElementGetTypeID() else {
+            log("hud: no focused element (AX \(fe.rawValue))"); return nil
+        }
+        let el = f as! AXUIElement
+        var rangeRef: CFTypeRef?
+        let re = AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, &rangeRef)
+        guard re == .success, let rr = rangeRef, CFGetTypeID(rr) == AXValueGetTypeID() else {
+            log("hud: no selected-text range (AX \(re.rawValue))"); return nil
+        }
+        var sel = CFRange()
+        AXValueGetValue(rr as! AXValue, .cfRange, &sel)
+        // A zero-length range at the caret gives a zero-height rect in some apps; try the glyph before the caret
+        // and the one at it as well, and anchor to whichever has a real height.
+        let caret = sel.location + sel.length
+        let probes: [(range: CFRange, trailing: Bool)] = [
+            (CFRange(location: caret, length: 0), false),
+            (CFRange(location: max(0, caret - 1), length: 1), true),
+            (CFRange(location: caret, length: 1), false),
+        ]
+        for probe in probes {
+            guard let rect = boundsForRange(el, probe.range), rect.height > 0 else { continue }
+            let x = probe.trailing ? rect.maxX : rect.minX
+            log(String(format: "hud: caret at %.0f,%.0f h%.0f", x, rect.origin.y, rect.height))
+            return flip(NSRect(x: x, y: rect.origin.y, width: 0, height: rect.height))
+        }
+        log("hud: range present but no glyph bounds; centring")
+        return nil
+    }
+
+    private static func boundsForRange(_ el: AXUIElement, _ range: CFRange) -> CGRect? {
+        var r = range
+        guard let arg = AXValueCreate(.cfRange, &r) else { return nil }
+        var out: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(el, kAXBoundsForRangeParameterizedAttribute as CFString,
+                                                         arg, &out) == .success,
+              let o = out, CFGetTypeID(o) == AXValueGetTypeID() else { return nil }
+        var rect = CGRect.zero
+        AXValueGetValue(o as! AXValue, .cgRect, &rect)
+        return rect
+    }
+
+    /// Flip a Quartz (top-left origin) global rect to AppKit (bottom-left origin) screen coordinates.
+    private static func flip(_ r: NSRect) -> NSRect {
+        let primary = NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.main ?? NSScreen.screens.first!
+        return NSRect(x: r.origin.x, y: primary.frame.height - r.origin.y - r.height, width: r.width, height: r.height)
+    }
+}
+
 // MARK: - Menu bar UI
 
 /// NSServices entry point (see NSServices in Info.plist).
@@ -621,6 +774,7 @@ private final class ServiceProvider: NSObject {
 
 private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let engine = Engine()
+    private let hud = LayoutHUD()
     private var item: NSStatusItem!
     private var timer: Timer?
     private var shownSymbol = ""
@@ -630,6 +784,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
                                        keyEquivalent: "")
     private let cmdSpaceItem = NSMenuItem(title: L("Переключать раскладку по ⌘Space", "Switch layout with ⌘Space"),
                                           action: #selector(toggleCmdSpace), keyEquivalent: "")
+    private let indicatorItem = NSMenuItem(title: L("Показывать индикатор раскладки", "Show layout indicator"),
+                                           action: #selector(toggleIndicator), keyEquivalent: "")
+
+    private var showIndicator: Bool { UserDefaults.standard.bool(forKey: "showIndicator") }
 
     private lazy var services = ServiceProvider(engine)
 
@@ -643,10 +801,12 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         enabledItem.target = self
         loginItem.target = self
         cmdSpaceItem.target = self
+        indicatorItem.target = self
         menu.addItem(status)
         menu.addItem(.separator())
         menu.addItem(enabledItem)
         menu.addItem(cmdSpaceItem)
+        menu.addItem(indicatorItem)
         menu.addItem(loginItem)
         menu.addItem(.separator())
         menu.addItem(withTitle: L("Разрешения…", "Permissions…"), action: #selector(openAX),
@@ -666,6 +826,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
 
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
                                                           object: nil, queue: .main) { [weak self] _ in self?.engine.reset() }
+
+        // Our own always-on layout badge near the caret, on any input-source change (ours or the system's).
+        DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name(kTISNotifySelectedKeyboardInputSourceChanged as String),
+            object: nil, queue: .main) { [weak self] _ in
+                guard let self, self.showIndicator else { return }
+                self.hud.show()
+            }
 
         let trusted = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
         if trusted { engine.start() }
@@ -735,6 +903,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
         enabledItem.state = engine.enabled ? .on : .off
         cmdSpaceItem.state = engine.cmdSpace ? .on : .off
+        indicatorItem.state = showIndicator ? .on : .off
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
@@ -762,6 +931,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate
         }
         engine.cmdSpace.toggle()
         tick()
+    }
+
+    @objc private func toggleIndicator() {
+        UserDefaults.standard.set(!showIndicator, forKey: "showIndicator")
     }
 
     /// True when the system "Select the previous/next input source" shortcut (symbolic hotkeys 60/61) is enabled

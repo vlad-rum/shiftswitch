@@ -121,6 +121,13 @@ Sources → Select the previous input source*; ShiftSwitch warns you if it's sti
 and holding the keys down doesn't switch repeatedly. This only switches the layout — it never retypes text; that is
 still the right-Option tap.
 
+## Layout indicator (optional)
+
+macOS Sonoma shows a small badge under the text caret when you switch input source, but only in apps that expose
+their caret to the input system, so it's missing in many places. **Show layout indicator** (on by default) draws
+ShiftSwitch's own `RU`/`EN` badge on every layout change — on the caret where Accessibility exposes it, otherwise
+in the centre of the screen under the pointer (terminals, some Electron apps, or when focus isn't in a text field).
+
 ## Settings
 
 ```bash
@@ -155,6 +162,10 @@ imakarov/tap/shiftswitch` или DMG из [Releases](https://github.com/imakarov
 `TISSelectInputSource` в обход бага macOS, когда системное сочетание меняет раскладку и через 100–500 мс
 откатывает её обратно. Сначала отключите системное «Выбрать предыдущий источник ввода» в «Клавиатура →
 Сочетания клавиш → Источники ввода» — ShiftSwitch предупредит, если оно ещё включено.
+
+Пункт **«Показывать индикатор раскладки»** (включён по умолчанию) рисует собственную плашку `RU`/`EN` при каждой
+смене раскладки: у каретки, где её позицию отдаёт Accessibility, иначе — по центру экрана под указателем мыши
+(терминалы, часть Electron-приложений или когда фокус не в тексте).
 
 ## License
 
